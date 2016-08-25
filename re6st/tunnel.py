@@ -1,8 +1,9 @@
-import errno, logging, os, random, socket, subprocess, struct, time, weakref
+import errno, json, logging, os, random
+import socket, subprocess, struct, time, weakref
 from collections import defaultdict, deque
 from bisect import bisect, insort
 from OpenSSL import crypto
-from . import ctl, plib, utils, version, x509
+from . import ctl, plib, rina, utils, version, x509
 
 PORT = 326
 
@@ -403,7 +404,17 @@ class BaseTunnelManager(object):
                     if code == 3 and tunnel_killer.state == 'locked': # response
                         self._kill(peer)
         elif code == 4: # node information
-            if not msg:
+            if msg:
+                if not peer:
+                    return
+                try:
+                    ask, ver, protocol, rina_enabled = json.loads(msg)
+                except ValueError:
+                    ask = rina_enabled = False
+                rina.enabled(self, peer, rina_enabled)
+                if ask:
+                    return self._info(False)
+            else:
                 return version.version
         elif code == 5:
             # the registry wants to know the topology for debugging purpose
@@ -416,6 +427,16 @@ class BaseTunnelManager(object):
             # XXX: Quick'n dirty way to log in a common place.
             if peer and self._prefix == self.cache.registry_prefix:
                 logging.info("%s/%s: %s", int(peer, 2), len(peer), msg)
+
+    def askInfo(self, prefix):
+        return self.sendto(prefix, '\4' + self._info(True))
+
+    def _info(self, ask):
+        return json.dumps((ask,
+            version.version,
+            version.protocol,
+            rina.shim is not None,
+            ))
 
     @staticmethod
     def _restart():
@@ -651,6 +672,7 @@ class TunnelManager(BaseTunnelManager):
         #if remove and len(self._connecting) < len(self._free_iface_list):
         #    self._tuntap(self._free_iface_list.pop())
         self._next_refresh = time.time() + 5
+        rina.update(self)
 
     def _cleanDeads(self):
         disconnected = False
